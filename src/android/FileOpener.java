@@ -59,7 +59,8 @@ public class FileOpener extends CordovaPlugin {
         MIME_TYPES.put(".odt", "application/vnd.oasis.opendocument.text");
         MIME_TYPES.put(".ppt", "application/vnd.ms-powerpoint");
         MIME_TYPES.put(".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
-        MIME_TYPES.put(".apk", "application/vnd.android.package-archive");
+        // just do not want to add one more permission: android.permission.REQUEST_INSTALL_PACKAGES
+        // MIME_TYPES.put(".apk", "application/vnd.android.package-archive");
         MIME_TYPES.put(".swf", "application/x-shockwave-flash");
         MIME_TYPES.put(".zip", "application/zip");
         MIME_TYPES.put(".rar", "application/x-rar-compressed");
@@ -83,11 +84,9 @@ public class FileOpener extends CordovaPlugin {
                 String fileURL = args.getString(0);
                 if (fileURL.startsWith("file://")) {
                     // Local file uri (case of an already downloaded file)
-                    Log.d(FILE_OPENER, "Opening file from local URI as it begins with file://");
+                    Log.i(FILE_OPENER, "Opening file from local URI as it begins with file://");
                     File file = new File(fileURL.replaceFirst("^file:\\/\\/", ""));
-                    Uri uri = Uri.fromFile(file);
-                    Log.d(FILE_OPENER, "Local path: " + uri);
-                    this.openFile(uri, extension, context, callbackContext);
+                    this.openFile(file, extension, context, callbackContext);
                 } else {
                     try {
                         this.downloadAndOpenFile(context, fileURL, callbackContext);
@@ -136,18 +135,17 @@ public class FileOpener extends CordovaPlugin {
     }
 
     private boolean canOpenFile(String extension, Context context) {
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Log.i(FILE_OPENER, "canOpenFile, extension: " + extension);
         final File tempFile = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "test" + extension);
-        intent.setDataAndType(Uri.fromFile(tempFile), getMimeType(extension));
+        Intent intent = generateOpenFileIntent(tempFile, extension, context);
         return context.getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY).size() > 0;
     }
 
-    private void openFile(Uri localUri, String extension, Context context, CallbackContext callbackContext) throws JSONException {
+    private void openFile(File tempFile, String extension, Context context, CallbackContext callbackContext) throws JSONException {
+        Log.i(FILE_OPENER, "openFile, extension: " + extension);
 
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        intent.setDataAndType(localUri, getMimeType(extension));
+        Intent intent = generateOpenFileIntent(tempFile, extension, context);
+
         JSONObject obj = new JSONObject();
 
         try {
@@ -161,19 +159,39 @@ public class FileOpener extends CordovaPlugin {
         }
     }
 
+    private Intent generateOpenFileIntent(File tempFile, String extension, Context context) {
+      Log.i(FILE_OPENER, "generateOpenFileIntent, extension: " + extension + ", tempFile: " + tempFile);
+
+      Uri contentUri = null;
+      Intent intent = new Intent(Intent.ACTION_VIEW);
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+          String pkgName = cordova.getActivity().getPackageName() + ".provider";
+          Log.i(FILE_OPENER, "generateOpenFileIntent, pkgName: " + pkgName);
+
+          contentUri = FileProvider.getUriForFile(context, pkgName, tempFile);
+          intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+          intent.setDataAndType(contentUri, getMimeType(extension));
+      } else {
+          contentUri = Uri.fromFile(tempFile);
+          intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+          intent.setDataAndType(contentUri, getMimeType(extension));
+      }
+      return intent;
+    }
+
     private void downloadAndOpenFile(final Context context, final String fileUrl, final CallbackContext callbackContext) throws UnsupportedEncodingException {
         final String filename = fileUrl.substring(fileUrl.lastIndexOf("/") + 1);
         final String extension = fileUrl.substring(fileUrl.lastIndexOf("."));
         final File tempFile = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), filename);
 
+        Log.i(FILE_OPENER, "downloadAndOpenFile, fileUrl: " + fileUrl);
+        Log.i(FILE_OPENER, "downloadAndOpenFile, file exists? : " + tempFile.exists());
+
         if (tempFile.exists()) {
             try {
-                File file = new File(URLDecoder.decode(tempFile.toString(), "UTF-8"));
-                openFile(Uri.fromFile(file), extension, context, callbackContext);
+                openFile(tempFile, extension, context, callbackContext);
             } catch (JSONException e) {
                 Log.d(FILE_OPENER, "downloadAndOpenFile", e);
-            } catch (UnsupportedEncodingException e) {
-                e.printStackTrace();
             }
             return;
         }
@@ -193,22 +211,9 @@ public class FileOpener extends CordovaPlugin {
                     int status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS));
                     if (status == DownloadManager.STATUS_SUCCESSFUL) {
                         try {
-                            File file = new File(URLDecoder.decode(tempFile.toString(), "UTF-8"));
-                            Uri uri = null;
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                                uri = FileProvider.getUriForFile(
-                                        context,
-                                        context.getApplicationContext()
-                                                .getPackageName() + ".provider", file);
-                            } else {
-                                uri = Uri.fromFile(file);
-                            }
-
-                            openFile(uri, extension, context, callbackContext);
+                          openFile(tempFile, extension, context, callbackContext);
                         } catch (JSONException e) {
                             Log.d(FILE_OPENER, "downloadAndOpenFile", e);
-                        } catch (UnsupportedEncodingException e) {
-                            e.printStackTrace();
                         }
                     } else if (status == DownloadManager.STATUS_FAILED) {
                         manageDownloadStatusFailed(cursor, callbackContext);
